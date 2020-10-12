@@ -32,17 +32,17 @@ export class CdkFeedbackStack extends cdk.Stack {
 
         // @TODO obtain internal RTMP URL from internalRTMP input
         // e.g. "rtmp://10.10.10.10:1935/app-internal-stream"
-        const internalRTMPUrl = "";
+        const internalRTMPUrl = internalRTMP.attrSources
 
         // Declare channel that links external input to internal input
         // Declare properties that required by Channel
         const destinationRefId = "destination1";
         const destinations = [{
             "id": destinationRefId,
-            "settings": [{
-                "url": internalRTMPUrl, // @TODO obtain internal RTMP URL from internalRTMP input
-                streamName
-            }],
+            "settings": internalRTMPUrl.map(url => ({
+              url,
+              streamName,
+            })),
             "mediaPackageSettings": []
         }];
         const encoderSettings = toUpperCamelCase({
