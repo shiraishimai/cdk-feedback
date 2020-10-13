@@ -70,17 +70,27 @@ export class CdkFeedbackStack extends cdk.Stack {
             outputGroups: [
                 {
                     outputGroupSettings: {
-                        mediaPackageGroupSettings: {
-                            destination: {
-                                destinationRefId,
-                            },
+                        rtmpGroupSettings: {
+                            authenticationScheme: "COMMON",
+                            cacheLength: 30,
+                            restartDelay: 15,
+                            cacheFullBehavior: "DISCONNECT_IMMEDIATELY",
+                            captionData: "ALL",
+                            inputLossAction: "EMIT_OUTPUT"
                         },
                     },
                     name: "external-internal-tunnel",
                     outputs: [
                         {
                             outputSettings: {
-                                mediaPackageOutputSettings: {},
+                                rtmpOutputSettings: {
+                                    destination: {
+                                        destinationRefId,
+                                    },
+                                    connectionRetryInterval: 2,
+                                    numRetries: 10,
+                                    certificateMode: "VERIFY_AUTHENTICITY"
+                                },
                             },
                             outputName: "1080p30",
                             videoDescriptionName: "video_1080p30",
