@@ -1,38 +1,86 @@
 import * as cdk from '@aws-cdk/core';
+import * as ec2 from '@aws-cdk/aws-ec2';
+import * as iam from '@aws-cdk/aws-iam';
 import * as medialive from '@aws-cdk/aws-medialive';
 import {toUpperCamelCase} from './util';
 
-export class CdkFeedbackStack extends cdk.Stack {
-    constructor(scope: cdk.Construct, id: string, props?: cdk.StackProps) {
-        super(scope, id, props);
+
+export interface MediaLiveDemoProps  {
+  /**
+   * IAM role for the mediaLive.
+   * 
+   * @default - create a new role for this stack
+   */
+  readonly role?: iam.IRole;
+
+  /**
+   * input upstream trusted network CIDR
+   * 
+   * @default - 10.0.0.0/16
+   */
+  readonly trustedInputNetworkCidr?: string;
+
+  /**
+   * input security group
+   * 
+   * @default - automatically create a new security group with an ingress to allow all traffic from `trustedInputNetworkCidr`
+   */
+  readonly inputSecurityGroup?: ec2.ISecurityGroup[];
+}
+
+export class MediaLiveDemo extends cdk.Construct {
+    readonly vpc: ec2.IVpc;
+    private readonly trustedInputCidr: string;
+    constructor(scope: cdk.Construct, id: string, props: MediaLiveDemoProps = {}) {
+        super(scope, id);
+
+        this.vpc = ec2.Vpc.fromLookup(this, 'Vpc', { isDefault: true });
+        // create a new sg for this vpc and allow internally
+        const vpcSecurityGroup = this.createVpcSecurityGroup();
+        this.trustedInputCidr = props.trustedInputNetworkCidr ?? '10.0.0.0/16';
+        let inputSecurityGroups = props.inputSecurityGroup ? props.inputSecurityGroup.map(s => s.securityGroupId) : 
+            [ this.createInputSecurityGroup('external').securityGroupId ];
+        const roleArn = props.role?.roleArn ?? this.createIamRole().roleArn;
 
         // Declare external input
         let inputName = "ExternalRTMP";
         let streamName = "app-external-stream";
         const externalRTMP = new medialive.CfnInput(this, inputName, {
+            vpc: {
+              securityGroupIds: [ vpcSecurityGroup.securityGroupId ],
+              subnetIds: this.vpc.privateSubnets.map(s => s.subnetId),
+            },
             name: inputName,
             type: "RTMP_PUSH",
             destinations: [{
                 streamName
             }],
-            inputSecurityGroups: ["7088515"]
+            roleArn,
+            // inputSecurityGroups: ["7088515"]
+            // inputSecurityGroups,
         });
 
         // Declare internal input
         inputName = "InternalRTMP";
         streamName = "app-internal-stream";
         const internalRTMP = new medialive.CfnInput(this, inputName, {
+            vpc: {
+              securityGroupIds: [ vpcSecurityGroup.securityGroupId ],
+              subnetIds: this.vpc.privateSubnets.map(s => s.subnetId),
+            },
             name: inputName,
             type: "RTMP_PUSH",
             destinations: [{
                 streamName
             }],
-            inputSecurityGroups: ["7088515"]
+            // inputSecurityGroups: ["7088515"]
+            // inputSecurityGroups,
+            roleArn,
         });
 
         // @TODO obtain internal RTMP URL from internalRTMP input
         // e.g. "rtmp://10.10.10.10:1935/app-internal-stream"
-        const internalRTMPUrl = internalRTMP.attrSources
+        const internalRTMPUrl: string[] = internalRTMP.attrSources
 
         // Declare channel that links external input to internal input
         // Declare properties that required by Channel
@@ -163,7 +211,40 @@ export class CdkFeedbackStack extends cdk.Stack {
             inputSpecification,
             channelClass: "SINGLE_PIPELINE",
             name: "FeedbackChannel",
-            roleArn: "arn:aws:iam::471162862146:role/MediaLiveAccessRole"
+            // roleArn: "arn:aws:iam::471162862146:role/MediaLiveAccessRole"
+            roleArn,
         });
     }
+    private createIamRole(): iam.Role {
+        // create a non-admin IAM role for medialive
+        // see - https://docs.aws.amazon.com/medialive/latest/ug/setting-up-restricted-admin.html
+        const role = new iam.Role(this, 'MediaLiveIamRole', {
+          assumedBy: new iam.ServicePrincipal('medialive.amazonaws.com'),
+          managedPolicies: [ 
+            iam.ManagedPolicy.fromAwsManagedPolicyName('AWSElementalMediaLiveFullAccess'),
+            iam.ManagedPolicy.fromAwsManagedPolicyName('AmazonEC2ReadOnlyAccess'),
+          ],
+        });
+        // role.addToPolicy(new iam.PolicyStatement({
+        //   actions: [ 'ec2:Describe*' ],
+        //   resources: [ '*' ],
+        // }))
+        return role
+    };
+    private createInputSecurityGroup(id: string): ec2.SecurityGroup {
+        // create an IAM role for medialive
+        const sg = new ec2.SecurityGroup(this, `${id}DefaultInputSecurityGroup`, {
+          vpc: this.vpc,
+        })
+        sg.addIngressRule(ec2.Peer.ipv4(this.trustedInputCidr), ec2.Port.allTraffic());
+        return sg;
+    };
+    private createVpcSecurityGroup(): ec2.SecurityGroup {
+        // create an IAM role for medialive
+        const sg = new ec2.SecurityGroup(this, 'VpcSecurityGroup', {
+          vpc: this.vpc,
+        })
+        sg.connections.allowInternally(ec2.Port.allTraffic());
+        return sg;
+    };
 }
