@@ -213,7 +213,8 @@ export class MediaLiveDemo extends cdk.Construct {
             // })),
             "mediaPackageSettings": []
         }];
-        const encoderSettings = toUpperCamelCase({
+        // const encoderSettings = toUpperCamelCase({
+      const encoderSettings = {
             audioDescriptions: [
                 {
                     audioSelectorName: "Default",
@@ -302,7 +303,7 @@ export class MediaLiveDemo extends cdk.Construct {
                     width: 1920,
                 },
             ],
-        });
+        };
         const inputAttachments = [externalRTMP].map(input => {
             return {
                 "inputId": input.id,
