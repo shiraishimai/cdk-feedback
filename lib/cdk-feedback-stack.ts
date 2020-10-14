@@ -3,7 +3,80 @@ import * as ec2 from '@aws-cdk/aws-ec2';
 import * as iam from '@aws-cdk/aws-iam';
 import * as medialive from '@aws-cdk/aws-medialive';
 import {toUpperCamelCase} from './util';
+import { CfnInputSecurityGroup } from '@aws-cdk/aws-medialive';
 
+
+enum InputType {
+  RTMP_PUSH = 'RTMP_PUSH',
+  RTMP_PULL = 'RTMP_PULL',
+}
+
+export interface Destination {
+  readonly streamName: string;
+}
+
+export interface InputVpcRequest {
+  readonly securityGroup?: ec2.ISecurityGroup[];
+  readonly subnet?: ec2.ISubnet[];
+}
+
+/**
+ * Construct properties for the Input resource
+ */
+export interface InputProps extends cdk.ResourceProps {
+  /**
+   * name of the Input
+   */
+  readonly name?: string
+  /**
+   * type of the Input
+   * 
+   * @default RTMP_PUSH
+   */
+  readonly type?: InputType;
+  /**
+   * IAM Role for the MediaLive Input
+   */
+  readonly role?: iam.IRole;
+  /**
+   * Input SecurityGruops
+   */
+  readonly inputSecurityGroups?: CfnInputSecurityGroup[];
+  /**
+   * destinations
+   */
+  readonly destination: Destination[]; 
+  /**
+   * VPC Input request
+   */
+  readonly vpcInput?: InputVpcRequest;
+}
+
+export class Input extends cdk.Resource {
+  readonly destination: string;
+  readonly id: string;
+  readonly name: string;
+  constructor(scope: cdk.Construct, id: string, props: InputProps) {
+    super(scope, id)
+        this.name = props.name ?? id;
+        const resource = new medialive.CfnInput(this, 'Resource', {
+            vpc: props.vpcInput ? {
+              securityGroupIds: props.vpcInput.securityGroup?.map(s => s.securityGroupId),
+              subnetIds: props.vpcInput.subnet?.map(s => s.subnetId),
+            } : undefined,
+            name: this.name,
+            type: props.type ?? InputType.RTMP_PUSH,
+            destinations: props.destination
+              ? props.destination.map(d => ({ streamName: d.streamName }))
+              : undefined,
+            roleArn: props.role ? props.role.roleArn : undefined,
+            inputSecurityGroups: props.inputSecurityGroups ? props.inputSecurityGroups.map(s => s.ref) : undefined,
+        });
+        this.destination = cdk.Fn.select(0, resource.attrDestinations);
+        this.id = resource.ref;
+        // new cdk.CfnOutput(this, 'Destination', { value:  cdk.Fn.join(',', resource.attrDestinations)  })
+  }
+}
 
 export interface MediaLiveDemoProps  {
   /**
@@ -21,11 +94,19 @@ export interface MediaLiveDemoProps  {
   readonly trustedInputNetworkCidr?: string;
 
   /**
-   * input security group
+   * input security group for internalRTMP
    * 
    * @default - automatically create a new security group with an ingress to allow all traffic from `trustedInputNetworkCidr`
    */
-  readonly inputSecurityGroup?: ec2.ISecurityGroup[];
+  readonly internalInputSecurityGroup?: medialive.CfnInputSecurityGroup[];
+
+  /**
+   * input security group for externalRTMP
+   * 
+   * @default - automatically create a new security group with an ingress to allow all traffic from `0.0.0.0/0`
+   */
+  readonly externalInputSecurityGroup?: medialive.CfnInputSecurityGroup[];
+
 }
 
 export class MediaLiveDemo extends cdk.Construct {
@@ -38,59 +119,98 @@ export class MediaLiveDemo extends cdk.Construct {
         // create a new sg for this vpc and allow internally
         const vpcSecurityGroup = this.createVpcSecurityGroup();
         this.trustedInputCidr = props.trustedInputNetworkCidr ?? '10.0.0.0/16';
-        let inputSecurityGroups = props.inputSecurityGroup ? props.inputSecurityGroup.map(s => s.securityGroupId) : 
-            [ this.createInputSecurityGroup('external').securityGroupId ];
-        const roleArn = props.role?.roleArn ?? this.createIamRole().roleArn;
+        // const externalInputSecurityGroups = props.externalInputSecurityGroup ? props.externalInputSecurityGroup.map(s => s.ref) : 
+        //     [ this.createExternalInputSecurityGroup().ref ];
+        // const internalInputSecurityGroups = props.internalInputSecurityGroup ? props.internalInputSecurityGroup.map(s => s.ref) : 
+        //     [ this.createInternalInputSecurityGroup().ref ];
+
+        // const roleArn = props.role?.roleArn ?? this.createIamRole().roleArn;
+        const role = props.role ?? this.createIamRole();
 
         // Declare external input
-        let inputName = "ExternalRTMP";
-        let streamName = "app-external-stream";
-        const externalRTMP = new medialive.CfnInput(this, inputName, {
-            vpc: {
-              securityGroupIds: [ vpcSecurityGroup.securityGroupId ],
-              subnetIds: this.vpc.privateSubnets.map(s => s.subnetId),
-            },
-            name: inputName,
-            type: "RTMP_PUSH",
-            destinations: [{
-                streamName
-            }],
-            roleArn,
-            // inputSecurityGroups: ["7088515"]
-            // inputSecurityGroups,
-        });
+        const externalInputName = "ExternalRTMP";
+        const externalStreamName = "app-external-stream";
 
+        const externalRTMP = new Input(this, 'ExternalRTMP', {
+          name: externalInputName,
+          type: InputType.RTMP_PUSH,
+          destination: [
+            {
+              streamName: externalStreamName,
+            }
+          ],
+          role,
+          inputSecurityGroups: props.externalInputSecurityGroup ?? [ this.createExternalInputSecurityGroup() ],
+        })
+
+        // const externalRTMP = new medialive.CfnInput(this, externalInputName, {
+        //     // vpc: {
+        //     //   securityGroupIds: [ vpcSecurityGroup.securityGroupId ],
+        //     //   subnetIds: this.vpc.privateSubnets.map(s => s.subnetId),
+        //     // },
+        //     name: externalInputName,
+        //     type: "RTMP_PUSH",
+        //     destinations: [{
+        //         streamName: externalStreamName
+        //     }],
+        //     roleArn,
+        //     // inputSecurityGroups: ["7088515"]
+        //     inputSecurityGroups: externalInputSecurityGroups,
+        // });
+
+        
         // Declare internal input
-        inputName = "InternalRTMP";
-        streamName = "app-internal-stream";
-        const internalRTMP = new medialive.CfnInput(this, inputName, {
-            vpc: {
-              securityGroupIds: [ vpcSecurityGroup.securityGroupId ],
-              subnetIds: this.vpc.privateSubnets.map(s => s.subnetId),
-            },
-            name: inputName,
-            type: "RTMP_PUSH",
-            destinations: [{
-                streamName
-            }],
-            // inputSecurityGroups: ["7088515"]
-            // inputSecurityGroups,
-            roleArn,
-        });
+        const internalInputName = "InternalRTMP";
+        const internalStreamName = "app-internal-stream";
+
+        const internalRTMP = new Input(this, 'InternalRTMP', {
+          name: internalStreamName,
+          type: InputType.RTMP_PUSH,
+          destination: [{
+            streamName: internalStreamName,
+          }],
+          role,
+          inputSecurityGroups: props.internalInputSecurityGroup ?? [ this.createInternalInputSecurityGroup() ],
+        })
+        
+        // const internalRTMP = new medialive.CfnInput(this, internalInputName, {
+        //     // vpc: {
+        //     //   securityGroupIds: [ vpcSecurityGroup.securityGroupId ],
+        //     //   subnetIds: this.vpc.privateSubnets.map(s => s.subnetId),
+        //     // },
+        //     name: internalStreamName,
+        //     type: "RTMP_PUSH",
+        //     destinations: [{
+        //         streamName: internalStreamName,
+        //     }],
+        //     // inputSecurityGroups: ["7088515"]
+        //     inputSecurityGroups: internalInputSecurityGroups,
+        //     roleArn,
+        // });
+
+        // new cdk.CfnOutput(this, 'Destinations', { value: cdk.Fn.join(',', internalRTMP.attrDestinations) });
+        new cdk.CfnOutput(this, 'InternalDestinations', { value: internalRTMP.destination });
+        new cdk.CfnOutput(this, 'ExternalDestinations', { value: externalRTMP.destination });
 
         // @TODO obtain internal RTMP URL from internalRTMP input
         // e.g. "rtmp://10.10.10.10:1935/app-internal-stream"
-        const internalRTMPUrl: string[] = internalRTMP.attrSources
+        // const internalRTMPUrl: string[] = internalRTMP.attrSources
 
         // Declare channel that links external input to internal input
         // Declare properties that required by Channel
         const destinationRefId = "destination1";
         const destinations = [{
             "id": destinationRefId,
-            "settings": internalRTMPUrl.map(url => ({
-              url,
-              streamName,
-            })),
+            "settings": [
+              {
+                streamName: internalStreamName,
+                url: internalRTMP.destination,
+              }
+            ],
+            // "settings": internalRTMPUrl.map(url => ({
+            //   url,
+            //   streamName: internalStreamName,
+            // })),
             "mediaPackageSettings": []
         }];
         const encoderSettings = toUpperCamelCase({
@@ -185,7 +305,7 @@ export class MediaLiveDemo extends cdk.Construct {
         });
         const inputAttachments = [externalRTMP].map(input => {
             return {
-                "inputId": input.ref,
+                "inputId": input.id,
                 "inputAttachmentName": input.name,
                 "inputSettings": {
                     "sourceEndBehavior": "CONTINUE",
@@ -212,8 +332,10 @@ export class MediaLiveDemo extends cdk.Construct {
             channelClass: "SINGLE_PIPELINE",
             name: "FeedbackChannel",
             // roleArn: "arn:aws:iam::471162862146:role/MediaLiveAccessRole"
-            roleArn,
+            roleArn: role.roleArn,
         });
+
+        // channel.node.addDependency(internalRTMP, externalRTMP)
     }
     private createIamRole(): iam.Role {
         // create a non-admin IAM role for medialive
@@ -231,13 +353,19 @@ export class MediaLiveDemo extends cdk.Construct {
         // }))
         return role
     };
-    private createInputSecurityGroup(id: string): ec2.SecurityGroup {
-        // create an IAM role for medialive
-        const sg = new ec2.SecurityGroup(this, `${id}DefaultInputSecurityGroup`, {
-          vpc: this.vpc,
+    private createExternalInputSecurityGroup(): medialive.CfnInputSecurityGroup {
+        return new medialive.CfnInputSecurityGroup(this, 'ExternalInputSecurityGroup', {
+          whitelistRules: [
+            { cidr: '0.0.0.0/0'}
+          ]
         })
-        sg.addIngressRule(ec2.Peer.ipv4(this.trustedInputCidr), ec2.Port.allTraffic());
-        return sg;
+    };
+    private createInternalInputSecurityGroup(): medialive.CfnInputSecurityGroup {
+        return new medialive.CfnInputSecurityGroup(this, 'InternalInputSecurityGroup', {
+          whitelistRules: [
+            { cidr: this.trustedInputCidr }
+          ]
+        })
     };
     private createVpcSecurityGroup(): ec2.SecurityGroup {
         // create an IAM role for medialive

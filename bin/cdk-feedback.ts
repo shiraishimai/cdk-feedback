@@ -14,8 +14,7 @@ const env = {
   account:  process.env.CDK_DEFAULT_ACCOUNT,
 };
 
-
-const stack = new cdk.Stack(app, 'CdkMediaLiveDemo', { env })
+const stack = new cdk.Stack(app, 'MediaLiveDemoStack', { env })
 
 // create with existing IAM Role
 // new MediaLiveDemo(stack, 'MediaLiveDemo', {
